@@ -4,6 +4,7 @@ import { join, relative, sep } from 'node:path';
 import { clean } from './session-text.mjs';
 import {
   PLUGIN_MANIFEST_FILES,
+  isSkillMdFile,
   pluginManifest,
   pluginSkillsRoots,
   resolveContainedPluginPath,
@@ -46,10 +47,6 @@ export function mergeMcpServerConfig(existing, next) {
 // discovery and this status surface read the same roots.
 export { pluginManifest, resolveContainedPluginPath };
 
-function isSkillMdFile(name) {
-  return /^(SKILL|skill)\.md$/i.test(name);
-}
-
 const PLUGIN_MANIFEST_FORMATS = {
   '.codex-plugin/plugin.json': 'codex',
   'plugin.json': 'mixdog',
@@ -57,12 +54,12 @@ const PLUGIN_MANIFEST_FORMATS = {
 };
 
 export function countSkillFiles(root) {
-  let count = 0;
+  const files = new Set();
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) walk(full);
-      else if (isSkillMdFile(entry.name)) count += 1;
+      else if (isSkillMdFile(entry.name)) files.add(full);
     }
   };
   const countAt = (skillsRoot) => {
@@ -71,7 +68,7 @@ export function countSkillFiles(root) {
       const st = statSync(skillsRoot);
       if (st.isFile()) {
         const base = skillsRoot.split(/[\\/]/).pop() || '';
-        if (isSkillMdFile(base)) count += 1;
+        if (isSkillMdFile(base)) files.add(skillsRoot);
         return;
       }
       if (st.isDirectory()) walk(skillsRoot);
@@ -80,7 +77,7 @@ export function countSkillFiles(root) {
     }
   };
   for (const skillsRoot of pluginSkillsRoots(root)) countAt(skillsRoot);
-  return count;
+  return files.size;
 }
 
 const MCP_STDIO_TYPES = new Set(['stdio']);

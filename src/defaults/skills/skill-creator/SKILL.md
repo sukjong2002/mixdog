@@ -177,10 +177,10 @@ findings with reasons, without promoting warnings to failures.
 ## Mixdog loading facts
 
 - Discovery precedence is machine-global, enabled plugin, then built-in.
-- The directory name must equal frontmatter `name`.
+- The directory name must equal frontmatter `name` for authored skills;
+  see `references/design.md` for installed-plugin compatibility.
 - The model sees one listing line per skill (`references/design.md`
-  "Listing line" owns its form and budget); UI descriptions are not
-  injected, and the body loads once through `Skill`.
+  "Listing line" owns its form and budget), and the body loads once through `Skill`.
 - `${MIXDOG_SKILL_DIR}` resolves to the active skill directory.
 - `metadata.requires` names a mandatory Mixdog built-in feature. Add it only
   when the skill cannot function without that feature.

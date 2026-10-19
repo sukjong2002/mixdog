@@ -531,8 +531,13 @@ function PluginDetailDialog({
     void refreshExtensions();
   }, [id]);
   const skills = pluginSkillRows(data, id);
+  const skillIssues = rows(record(data.skills), 'issues').filter((issue) => String(issue.plugin || '') === id);
   const servers = pluginMcpServers(data, open);
   const mcpProblems = pluginMcpProblems(open, servers);
+  // A bundled server that signs in with OAuth needs a way in from this card:
+  // the MCP panel lists configured servers only, so its Connect/Reconnect never
+  // reaches a plugin's own servers.
+  const oauthLogin = useMcpOAuthLogin({ run, refreshExtensions });
   const pluginOn = open.enabled !== false;
   const disabledSkills = disabledSkillNames(data);
   const contents = skills.length + servers.length;
@@ -592,6 +597,11 @@ function PluginDetailDialog({
           {t('MCP problem: {{message}}', { message: problem })}
         </ExtensionNote>
       ))}
+      {skillIssues.map((issue) => (
+        <ExtensionNote key={`${String(issue.filePath)}:${String(issue.code)}`} tone="danger">
+          {t('Excluded')}: {String(issue.filePath)} — {String(issue.message)}
+        </ExtensionNote>
+      ))}
       <ExtensionSection title={t('Contents')} count={contents}>
         {!pluginOn && servers.length > 0 && (
           <ExtensionNote>{t('Turn the plugin on to connect its MCP servers.')}</ExtensionNote>
@@ -630,6 +640,8 @@ function PluginDetailDialog({
               // still gates whether it runs.
               const serverOn = server.serverEnabled !== false;
               const status = mcpStatus(server);
+              const oauth = server.oauth ? record(server.oauth) : null;
+              const signedIn = oauth?.signedIn === true;
               return (
                 <ExtensionItemRow
                   key={`mcp:${name}`}
@@ -639,21 +651,31 @@ function PluginDetailDialog({
                   status={status.label}
                   tone={status.tone}
                   control={
-                    <CompactSwitch
-                      label={`${name} · ${t('Enabled')}`}
-                      checked={serverOn}
-                      disabled={busy}
-                      onChange={(next) => void run('setMcpServerEnabled', [name, next])}
-                    />
+                    <>
+                      {pluginOn && serverOn && oauth && (signedIn || !status.connected) && (
+                        <ExtensionAction disabled={busy} onClick={() => void oauthLogin.connect(name)}>
+                          {signedIn ? t('Reconnect') : t('Sign in')}
+                        </ExtensionAction>
+                      )}
+                      <CompactSwitch
+                        label={`${name} · ${t('Enabled')}`}
+                        checked={serverOn}
+                        disabled={busy}
+                        onChange={(next) => void run('setMcpServerEnabled', [name, next])}
+                      />
+                    </>
                   }
                 />
               );
             })}
           </ExtensionItemList>
         )}
-        {!contents && <ExtensionNote>{t('Nothing installed by this plugin yet.')}</ExtensionNote>}
+        {!contents && !skillIssues.length && (
+          <ExtensionNote>{t('Nothing installed by this plugin yet.')}</ExtensionNote>
+        )}
       </ExtensionSection>
       <PluginInfo plugin={open} />
+      {oauthLogin.dialog}
     </ExtensionDetailDialog>
   );
 }

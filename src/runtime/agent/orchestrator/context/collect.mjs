@@ -11,6 +11,7 @@ export {
   collectPromptSkillsCached,
   collectSkills,
   collectSkillsCached,
+  collectSkillCatalogCached,
   filterSkillsExcludingDisabled,
   invalidateSkillsCache,
   isSkillDisabled,

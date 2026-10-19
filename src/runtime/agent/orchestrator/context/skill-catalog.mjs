@@ -6,7 +6,7 @@ import { readFileSync, existsSync, readdirSync, statSync, watch as watch_ } from
 import { basename, dirname, join } from 'node:path';
 import { maxMtimeRecursive, mtimeSignatureRecursive, mtimeSignatureText } from '../cache-mtime.mjs';
 import { mixdogHome, resolvePluginData, mixdogRoot } from '../../../shared/plugin-paths.mjs';
-import { PLUGIN_MANIFEST_FILES, pluginSkillsRoots } from '../../../shared/plugin-manifest.mjs';
+import { PLUGIN_MANIFEST_FILES, isSkillMdFile, pluginSkillsRoots } from '../../../shared/plugin-manifest.mjs';
 import {
   parseSkillDocument,
   SKILL_TRIGGER_LISTING_MAX,
@@ -145,7 +145,7 @@ export function mtimeWithTtl(cache, key, paths, ttlMs) {
  * Collect available skills (frontmatter only — token efficient).
  * Full content is read on demand when a skill is loaded.
  */
-export function collectSkills(cwd) {
+export function collectSkills(cwd, issues = []) {
   if (skillsDisabled()) return [];
   void cwd;
   const skills = [];
@@ -158,26 +158,47 @@ export function collectSkills(cwd) {
     ...pluginSkillDirs().map(({ dir, plugin }) => ({ dir, source: 'plugin', plugin })),
     ...builtinSkillDirs().map((dir) => ({ dir, source: 'builtin', plugin: null })),
   ];
-  const seen = new Set();
+  const seen = new Map();
+  const seenFiles = new Set();
   for (const { dir, source, plugin } of sources) {
     if (!existsSync(dir)) continue;
     try {
-      const files = readdirSync(dir, { recursive: true });
+      const files = readdirSync(dir, { recursive: true }).sort();
       for (const f of files) {
-        if (basename(String(f)) !== 'SKILL.md') continue;
+        if (!isSkillMdFile(basename(String(f)))) continue;
         const filePath = join(dir, String(f));
+        if (seenFiles.has(filePath)) continue;
+        seenFiles.add(filePath);
+        const report = (code, message, extra = {}) =>
+          issues.push({ filePath, source, plugin, code, message, ...extra });
+        if (basename(filePath) !== 'SKILL.md') {
+          report('invalid-document', 'File must be named SKILL.md.');
+          continue;
+        }
         const content = readSafe(filePath);
-        if (!content) continue;
+        if (!content) {
+          report('invalid-document', 'SKILL.md is empty or unreadable.');
+          continue;
+        }
         let skill;
         try {
           skill = parseSkillDocument(content);
-        } catch {
+        } catch (error) {
+          report('invalid-document', error.message);
           continue;
         }
-        // Agent Skills requires the manifest name to match its folder.
-        if (basename(dirname(filePath)) !== skill.name) continue;
-        if (seen.has(skill.name)) continue;
-        seen.add(skill.name);
+        // Keep authoring strict for owned skills, but read installed plugins
+        // by their declared name without rewriting third-party directories.
+        if (source !== 'plugin' && basename(dirname(filePath)) !== skill.name) {
+          report('folder-name-mismatch', 'Folder name must match the skill name.', { name: skill.name });
+          continue;
+        }
+        if (seen.has(skill.name)) {
+          const shadowedBy = seen.get(skill.name);
+          report('shadowed', `Skill name is already registered by ${shadowedBy}.`, { name: skill.name, shadowedBy });
+          continue;
+        }
+        seen.set(skill.name, filePath);
         skills.push({
           name: skill.name,
           description: skill.description,
@@ -189,8 +210,8 @@ export function collectSkills(cwd) {
           ...readSkillToolDependencies(filePath, skill.frontmatter),
         });
       }
-    } catch {
-      /* ignore */
+    } catch (error) {
+      issues.push({ filePath: dir, source, plugin, code: 'unreadable-root', message: error.message });
     }
   }
   return skills;
@@ -404,8 +425,8 @@ function _rootSignatureText(root) {
   return text;
 }
 
-export function collectSkillsCached(cwd) {
-  if (skillsDisabled()) return [];
+export function collectSkillCatalogCached(cwd) {
+  if (skillsDisabled()) return { skills: [], issues: [] };
   void cwd;
   const key = 'global';
   // Same mixdog-owned dirs collectSkills() reads, used as the freshness gate.
@@ -425,12 +446,16 @@ export function collectSkillsCached(cwd) {
   const signature = `${createHash('sha1').update(rootTexts.join('\n')).digest('hex')}|${mtimeSignatureRecursive(pluginShallowWatchPaths(), 0)}`;
   const entry = _skillsCache.get(key);
   if (entry && entry.signature === signature) {
-    return entry.value;
+    return { skills: entry.value, issues: entry.issues };
   }
-  const skills = collectSkills(cwd);
-  _skillsCache.set(key, { value: skills, signature });
+  const issues = [];
+  const skills = collectSkills(cwd, issues);
+  _skillsCache.set(key, { value: skills, issues, signature });
   capMapSize(_skillsCache);
-  return skills;
+  return { skills, issues };
+}
+export function collectSkillsCached(cwd) {
+  return collectSkillCatalogCached(cwd).skills;
 }
 export function invalidateSkillsCache(cwd) {
   void cwd;
@@ -593,7 +618,8 @@ export function buildSkillManifest(skills, { limit = 80, charBudget = SKILL_MANI
   const list = (Array.isArray(skills) ? skills : [])
     .map((skill) => ({
       name: String(skill?.name || '').trim(),
-      trigger: String(skill?.whenToUse || '').trim(),
+      trigger: (String(skill?.whenToUse || '').trim() ||
+        (skill?.source === 'plugin' ? String(skill?.description || '').trim() : '')),
       linkedTools: skillManifestToolNames(skill),
     }))
     .filter((skill) => skill.name)

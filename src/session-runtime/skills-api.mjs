@@ -26,7 +26,7 @@ export function createSkillsApi({ contextMod, getCwd, getTools = () => [] }) {
 
   /** `cwd` overrides the session's folder (already validated by the caller). */
   function skillsStatus({ cwd = getCwd() } = {}) {
-    const skills = typeof contextMod.collectSkillsCached === 'function' ? contextMod.collectSkillsCached(cwd) : [];
+    const { skills, issues } = contextMod.collectSkillCatalogCached(cwd);
     const norm = (value) =>
       String(value || '')
         .replace(/\\/g, '/')
@@ -50,6 +50,7 @@ export function createSkillsApi({ contextMod, getCwd, getTools = () => [] }) {
     return {
       cwd,
       count: skills.length,
+      issues,
       tools: getTools().map(({ name }) => ({ name })),
       skills: skills.map((skill, index) => {
         const source = sourceForSkill(skill);

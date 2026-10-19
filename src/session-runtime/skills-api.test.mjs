@@ -7,6 +7,137 @@ import test from 'node:test';
 import * as contextMod from '../runtime/agent/orchestrator/context/collect.mjs';
 import { parseSkillDocument } from '../runtime/shared/skill-document.mjs';
 import { createSkillsApi } from './skills-api.mjs';
+import { countSkillFiles } from '../runtime/agent/orchestrator/runtime-core/plugin-mcp.mjs';
+
+test('skills status reads the registered list and diagnostics from one discovery snapshot', () => {
+  const snapshots = [
+    { skills: [{ name: 'same-view', description: 'Current skill.', source: 'global' }], issues: [] },
+    { skills: [], issues: [{ code: 'invalid-document', filePath: '/later/SKILL.md', message: 'Later edit.' }] },
+  ];
+  let next = 0;
+  const api = createSkillsApi({
+    getCwd: () => '/project',
+    contextMod: {
+      collectSkillCatalogCached: () => snapshots[Math.min(next++, 1)],
+      skillEnabledFlags: (skills) => skills.map(() => true),
+    },
+  });
+  const status = api.skillsStatus();
+  assert.deepEqual(status.skills.map((skill) => skill.name), ['same-view']);
+  assert.deepEqual(status.issues, []);
+});
+
+test('plugin skills load by frontmatter name without moving their nested resource directory', () => {
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-plugin-compatible-'));
+  const previousDataDir = process.env.MIXDOG_DATA_DIR;
+  process.env.MIXDOG_DATA_DIR = join(root, 'data');
+  try {
+    const pluginRoot = join(root, 'plugin');
+    const skillDir = join(pluginRoot, 'skills', 'notion', 'knowledge-capture');
+    mkdirSync(join(skillDir, 'references'), { recursive: true });
+    writeFileSync(join(skillDir, 'references', 'guide.md'), '# Reference\n');
+    const source = '---\nname: notion-knowledge-capture\ndescription: Capture decisions in Notion.\n---\n\nRead references/guide.md.\n';
+    writeFileSync(join(skillDir, 'SKILL.md'), source);
+    mkdirSync(join(process.env.MIXDOG_DATA_DIR, 'plugins'), { recursive: true });
+    writeFileSync(join(process.env.MIXDOG_DATA_DIR, 'plugins', 'registry.json'), JSON.stringify({
+      plugins: [{ id: 'notion-plugin', root: pluginRoot, enabled: true }],
+    }));
+    contextMod.invalidateSkillsCache();
+    const api = createSkillsApi({ contextMod, getCwd: () => root });
+    const skill = api.skillsStatus().skills.find((entry) => entry.name === 'notion-knowledge-capture');
+    assert.ok(skill);
+    assert.deepEqual(skill.owner, { kind: 'plugin', id: 'notion-plugin' });
+    assert.equal(skill.whenToUse, '');
+    const loaded = api.skillContent('notion-knowledge-capture');
+    assert.equal(loaded.dir, skillDir);
+    assert.equal(loaded.content, 'Read references/guide.md.');
+    assert.equal(readFileSync(join(loaded.dir, 'references', 'guide.md'), 'utf8'), '# Reference\n');
+    assert.equal(readFileSync(join(skillDir, 'SKILL.md'), 'utf8'), source);
+  } finally {
+    contextMod.invalidateSkillsCache();
+    if (previousDataDir === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previousDataDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('plugin discovery preserves upstream metadata behavior and explains actual exclusions', () => {
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-plugin-diagnostics-'));
+  const previousDataDir = process.env.MIXDOG_DATA_DIR;
+  const previousRoot = process.env.MIXDOG_ROOT;
+  process.env.MIXDOG_DATA_DIR = join(root, 'data');
+  process.env.MIXDOG_ROOT = join(root, 'package');
+  try {
+    const pluginRoot = join(root, 'plugin');
+    const writeSkill = (base, folder, name, extra = '', description = 'Reusable instructions.') => {
+      const dir = join(base, folder);
+      mkdirSync(dir, { recursive: true });
+      const filePath = join(dir, 'SKILL.md');
+      writeFileSync(filePath, `---\nname: ${name}\ndescription: ${description}\n${extra}---\n\n# ${folder}\n`);
+      return filePath;
+    };
+    // Create in the reverse of the required path order.
+    writeSkill(join(pluginRoot, 'skills'), 'z-last', 'shared');
+    const winner = writeSkill(join(pluginRoot, 'skills'), 'a-first', 'shared');
+    writeSkill(join(pluginRoot, 'skills'), 'user-only', 'user-only', 'disable-model-invocation: true\n');
+    writeSkill(join(pluginRoot, 'skills'), 'model-only', 'model-only', 'user-invocable: false\n');
+    writeSkill(join(pluginRoot, 'skills'), 'forked', 'forked', 'context: fork\n');
+    writeSkill(join(pluginRoot, 'skills'), 'hooked', 'hooked', 'hooks: {}\n');
+    writeSkill(join(pluginRoot, 'skills'), 'defaults', 'defaults', 'disable-model-invocation: false\nuser-invocable: true\n');
+    writeSkill(join(pluginRoot, 'skills'), 'invalid', 'INVALID');
+    writeSkill(join(pluginRoot, 'skills'), 'broken', 'broken', '', '[not valid YAML');
+    const lowercase = join(pluginRoot, 'skills', 'lower', 'skill.md');
+    mkdirSync(join(pluginRoot, 'skills', 'lower'), { recursive: true });
+    writeFileSync(lowercase, '---\nname: lower\ndescription: Wrong file name.\n---\n\n# Lower\n');
+    writeSkill(join(pluginRoot, 'skills'), 'override', 'owned');
+    writeSkill(join(process.env.MIXDOG_DATA_DIR, 'skills'), 'owned', 'owned');
+    writeSkill(join(process.env.MIXDOG_DATA_DIR, 'skills'), 'mismatch', 'wrong-global');
+    writeSkill(join(process.env.MIXDOG_ROOT, 'defaults', 'skills'), 'mismatch', 'wrong-builtin');
+    writeSkill(join(process.env.MIXDOG_ROOT, 'defaults', 'skills'), 'built-in', 'built-in');
+    writeSkill(join(pluginRoot, 'skills'), 'override-builtin', 'built-in');
+    const disabledRoot = join(root, 'disabled');
+    writeSkill(join(disabledRoot, 'skills'), 'hidden', 'disabled-skill');
+    // Overlapping roots must not produce a duplicate issue for the same file.
+    writeFileSync(join(pluginRoot, 'plugin.json'), JSON.stringify({ skills: './skills/a-first' }));
+    mkdirSync(join(process.env.MIXDOG_DATA_DIR, 'plugins'), { recursive: true });
+    writeFileSync(join(process.env.MIXDOG_DATA_DIR, 'plugins', 'registry.json'), JSON.stringify({ plugins: [
+      { id: 'compatible', root: pluginRoot, enabled: true },
+      { id: 'disabled', root: disabledRoot, enabled: false },
+    ] }));
+    contextMod.invalidateSkillsCache();
+    const api = createSkillsApi({ contextMod, getCwd: () => root });
+    const status = api.skillsStatus();
+    assert.deepEqual(status.skills.map((skill) => skill.name).sort(),
+      ['built-in', 'defaults', 'forked', 'hooked', 'model-only', 'owned', 'shared', 'user-only']);
+    assert.equal(api.skillContent('shared').filePath, winner);
+    assert.equal(api.skillContent('built-in').source, 'plugin');
+    assert.equal(api.skillContent('owned').source, 'global');
+    const pluginIssues = status.issues.filter((issue) => issue.plugin === 'compatible');
+    assert.equal(pluginIssues.length, 5);
+    assert.equal(pluginIssues.filter((issue) => issue.code === 'invalid-document').length, 3);
+    assert.equal(pluginIssues.filter((issue) => issue.code === 'shadowed').length, 2);
+    assert.ok(pluginIssues.every((issue) => issue.filePath && issue.message));
+    assert.equal(pluginIssues.find((issue) => issue.filePath === lowercase)?.message, 'File must be named SKILL.md.');
+    const registered = status.skills.filter((skill) => skill.owner.id === 'compatible');
+    assert.equal(countSkillFiles(pluginRoot), 12, 'overlapping roots count each physical path once');
+    assert.equal(countSkillFiles(pluginRoot), registered.length + pluginIssues.length);
+    const duplicate = pluginIssues.find((issue) => issue.name === 'shared');
+    assert.equal(duplicate.shadowedBy, winner);
+    assert.deepEqual(api.skillsStatus().issues, status.issues, 'cached reads preserve diagnostics');
+    for (const name of ['user-only', 'model-only', 'forked', 'hooked']) {
+      assert.equal(api.skillContent(name).source, 'plugin');
+    }
+    assert.match(contextMod.buildSkillManifest(contextMod.collectSkillsCached(root)),
+      /^- user-only: Reusable instructions\.$/m);
+  } finally {
+    contextMod.invalidateSkillsCache();
+    if (previousDataDir === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previousDataDir;
+    if (previousRoot === undefined) delete process.env.MIXDOG_ROOT;
+    else process.env.MIXDOG_ROOT = previousRoot;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('a write through the skills API is visible to the very next read, with no waiting', async () => {
   const root = mkdtempSync(join(tmpdir(), 'mixdog-skill-fresh-'));

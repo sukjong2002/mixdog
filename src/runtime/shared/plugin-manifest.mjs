@@ -11,6 +11,11 @@ import { readJsonSafe } from './json-file.mjs';
  *  root-level `plugin.json`, then Claude Code's `.claude-plugin/plugin.json`. */
 export const PLUGIN_MANIFEST_FILES = ['.codex-plugin/plugin.json', 'plugin.json', '.claude-plugin/plugin.json'];
 
+/** Candidate skill documents, including spellings that need a naming diagnostic. */
+export function isSkillMdFile(name) {
+  return /^skill\.md$/i.test(name);
+}
+
 /** First readable manifest in `PLUGIN_MANIFEST_FILES` order; a plugin without
  *  any is an empty manifest, never an error. A Claude Code manifest's `skills`
  *  is a plugin-relative path (e.g. `./.claude/skills/`). */

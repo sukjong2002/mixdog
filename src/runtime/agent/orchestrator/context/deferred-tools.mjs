@@ -4,11 +4,13 @@ import { isToolBridgeEnabled, TOOL_BRIDGE_GUIDANCE } from '../runtime-core/tool-
 
 export function compactPromptManifestText(value, max = 250) {
   const text = String(value || '')
+    .replace(/[<>]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
   const limit = Math.max(1, Math.floor(max));
   if (text.length <= limit) return text;
-  const head = text.slice(0, Math.max(1, limit - 1));
+  if (limit <= 3) return '.'.repeat(limit);
+  const head = text.slice(0, limit - 3);
   const space = head.lastIndexOf(' ');
   const cut = space >= Math.floor(limit * 0.6) ? head.slice(0, space) : head;
   return `${cut.replace(/[\s,.;:!?/-]+$/, '')}...`;
@@ -75,7 +77,7 @@ export function buildDeferredToolManifest(entries) {
     const description =
       typeof entry === 'string'
         ? ''
-        : compactPromptManifestText(String(entry?.description || '').replace(/[<>]/g, ''), 100);
+        : compactPromptManifestText(entry?.description, 100);
     list.push({ name, description });
   }
   if (!list.length) return '';

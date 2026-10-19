@@ -559,6 +559,107 @@ test('project scope stays in the plugin detail and saves from its scope selector
   }
 });
 
+test('plugin detail explains exclusions without redundant skill counters', async () => {
+  const data = panelContext().data;
+  data.plugins.plugins[0].skillCount = 4;
+  data.skills = {
+    skills: [{ name: 'usable', owner: { kind: 'plugin', id: 'example-plugin' } }],
+    issues: [
+      { plugin: 'example-plugin', filePath: '/plugin/empty/SKILL.md', message: 'SKILL.md is empty or unreadable.' },
+      { plugin: 'example-plugin', filePath: '/plugin/broken/SKILL.md', message: 'Invalid YAML frontmatter.' },
+      { plugin: 'example-plugin', filePath: '/plugin/duplicate/SKILL.md', message: 'Skill name is already registered by /winner/SKILL.md.' },
+      { plugin: 'other', filePath: '/other/SKILL.md', message: 'Other plugin issue' },
+    ],
+  };
+  const rendered = await renderPanel('plugins', { data });
+  try {
+    await act(async () => document.querySelector('[data-extension-row="Example plugin"]').click());
+    const dialog = document.querySelector('.extensions-dialog');
+    const field = (label) => [...dialog.querySelectorAll('.schedules-field')].find(
+      (node) => node.querySelector('span')?.textContent === label
+    );
+    assert.equal(Boolean(field('Files')), false);
+    assert.equal(Boolean(field('Registered skills')), false);
+    assert.match(dialog.textContent, /\/plugin\/empty\/SKILL\.md.*empty or unreadable/);
+    assert.match(dialog.textContent, /\/plugin\/broken\/SKILL\.md.*Invalid YAML/);
+    assert.match(dialog.textContent, /\/plugin\/duplicate\/SKILL\.md.*\/winner\/SKILL\.md/);
+    assert.doesNotMatch(dialog.textContent, /Other plugin issue/);
+  } finally {
+    await rendered.cleanup();
+  }
+});
+
+test('disabled skill-only plugin keeps the upstream empty-content note', async () => {
+  const data = panelContext().data;
+  data.plugins.plugins[0].enabled = false;
+  data.plugins.plugins[0].skillCount = 4;
+  data.skills = { skills: [], issues: [] };
+  data.mcp.servers = [];
+  const rendered = await renderPanel('plugins', { data });
+  try {
+    await act(async () => document.querySelector('[data-extension-row="Example plugin"]').click());
+    assert.match(document.querySelector('.extensions-dialog').textContent, /Nothing installed by this plugin yet\./);
+  } finally {
+    await rendered.cleanup();
+  }
+});
+
+test('plugin detail offers sign-in only for eligible OAuth servers and routes the exact server name', async () => {
+  const data = panelContext().data;
+  const owner = { kind: 'plugin', id: 'example-plugin' };
+  const remote = { type: 'http', url: 'https://mcp.example/mcp' };
+  data.mcp.servers = [
+    { name: 'local', owner, enabled: true, connected: true, config: { type: 'stdio', command: 'x' } },
+    { name: 'keyed', owner, enabled: true, connected: true, config: { ...remote, headers: { 'X-Key': 'test-key' } } },
+    { name: 'public', owner, enabled: true, connected: true, config: remote, oauth: { signedIn: false } },
+    { name: 'login', owner, enabled: true, connected: false, config: remote, oauth: { signedIn: false } },
+    { name: 'signed', owner, enabled: true, connected: true, config: remote, oauth: { signedIn: true } },
+    { name: 'off', owner, enabled: true, serverEnabled: false, config: remote, oauth: { signedIn: false } },
+  ];
+  const calls = [];
+  const rendered = await renderPanel('plugins', {
+    data,
+    async run(capability, args) { calls.push([capability, args]); },
+  });
+  try {
+    await act(async () => document.querySelector('[data-extension-row="Example plugin"]').click());
+    const actions = (name) => [...document.querySelectorAll(`[data-extension-item="${name}"] button`)]
+      .filter((button) => /^(Sign in|Reconnect)$/.test(button.textContent.trim()));
+    for (const name of ['local', 'keyed', 'public', 'off']) assert.equal(actions(name).length, 0, name);
+    assert.deepEqual(actions('login').map((button) => button.textContent.trim()), ['Sign in']);
+    assert.deepEqual(actions('signed').map((button) => button.textContent.trim()), ['Reconnect']);
+    await act(async () => actions('login')[0].click());
+    await act(async () => actions('signed')[0].click());
+    assert.deepEqual(calls, [
+      ['beginMcpOAuthLogin', ['login']],
+      ['beginMcpOAuthLogin', ['signed']],
+    ]);
+  } finally {
+    await rendered.cleanup();
+  }
+});
+
+test('plugin detail hides OAuth actions when the whole plugin is disabled', async () => {
+  const data = panelContext().data;
+  data.plugins.plugins[0].enabled = false;
+  const owner = { kind: 'plugin', id: 'example-plugin' };
+  data.mcp.servers = [
+    { name: 'login', owner, enabled: false, serverEnabled: true, connected: false, oauth: { signedIn: false } },
+    { name: 'signed', owner, enabled: false, serverEnabled: true, connected: true, oauth: { signedIn: true } },
+  ];
+  const rendered = await renderPanel('plugins', { data });
+  try {
+    await act(async () => document.querySelector('[data-extension-row="Example plugin"]').click());
+    const dialog = document.querySelector('.extensions-dialog');
+    for (const name of ['login', 'signed']) assert.ok(dialog.querySelector(`[data-extension-item="${name}"]`));
+    assert.equal([...dialog.querySelectorAll('button')].some(
+      (button) => /^(Sign in|Reconnect)$/.test(button.textContent.trim())
+    ), false);
+  } finally {
+    await rendered.cleanup();
+  }
+});
+
 test('plugin detail toggles each bundled skill and MCP server on its own', async () => {
   const calls = [];
   const rendered = await renderPanel('plugins', {

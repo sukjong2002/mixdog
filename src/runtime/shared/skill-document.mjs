@@ -39,7 +39,8 @@ export function validateSkillDescription(value) {
 /**
  * `when_to_use` is the optional trigger line shown beside the description in
  * the model's skill listing: trigger phrases and the boundary against a
- * neighbouring skill. Empty means the description alone routes the skill.
+ * neighbouring skill. Empty falls back to description for plugin skills only;
+ * global and built-in skills remain listed by name alone.
  */
 export function validateSkillWhenToUse(value) {
   const whenToUse = String(value || '').trim();

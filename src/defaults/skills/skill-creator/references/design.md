@@ -47,6 +47,9 @@ Required:
   at most 64 characters; identical to the parent directory.
 - `description`: one sentence naming the capability.
 
+These are authoring rules. Installed plugin skills may load by frontmatter
+`name` even when the folder differs; global and built-in skills remain strict.
+
 Recommended:
 
 - `when_to_use`: the trigger line — phrases and situations that should select
@@ -85,7 +88,10 @@ one listing line per skill:
 - <name>: <when_to_use> [tools: <linked tool names>]
 ```
 
-The runtime cuts the trigger at 100 characters on a word boundary, and when
+For imported plugin skills only, an empty `when_to_use` falls back to
+`description` without changing either source field. Angle brackets are removed
+from the displayed trigger to keep it inside the listing. The runtime cuts the
+trigger at 100 characters including the ellipsis, and when
 many skills share the listing budget it shrinks every trigger evenly toward
 60; text past the cut never routes the skill. The tool suffix comes from effective dependencies, not
 handwritten trigger text; `mcp:<server>` denotes a server's tools. Keep these
